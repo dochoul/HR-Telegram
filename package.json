@@ -1,0 +1,23 @@
+{
+  "name": "nabia-hr-telegram-bot",
+  "version": "1.0.0",
+  "description": "Nabia HR Telegram Bot - 경영진 전용 HR 데이터 조회 시스템",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "seed": "tsx src/database/seed.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "grammy": "^1.21.1",
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "@faker-js/faker": "^9.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0"
+  }
+}
