@@ -166,6 +166,23 @@ npm run dev
 npm run seed
 ```
 
+## ngrok으로 외부 접속 (선택)
+
+로컬에서 실행 중인 봇을 외부에서 접근 가능하게 하려면 ngrok을 사용할 수 있습니다.
+
+```bash
+# 1. ngrok 설치 (macOS)
+brew install ngrok
+
+# 2. ngrok 계정 연동 (https://dashboard.ngrok.com 에서 토큰 확인)
+ngrok config add-authtoken YOUR_NGROK_TOKEN
+
+# 3. ngrok 터널 실행 (포트 번호는 필요에 따라 변경)
+ngrok http 3000
+```
+
+> **참고**: 현재 봇은 polling 방식으로 동작하므로 ngrok 없이도 정상 작동합니다. Webhook 방식으로 전환할 경우에만 필요합니다.
+
 ## 최초 설정
 
 1. `.env`의 `SUPERADMIN_CODE` 값을 안전한 코드로 변경
