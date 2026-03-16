@@ -222,6 +222,13 @@ ngrok http 3000
 | `/revoke [telegram_id]` | 사용자 권한 회수 |
 | `/users` | 등록 사용자 전체 목록 |
 
+## 스크린샷
+
+![IMG_2460](IMG_2460.PNG)
+![IMG_2461](IMG_2461.PNG)
+![IMG_2462](IMG_2462.PNG)
+![IMG_2463](IMG_2463.PNG)
+
 ## 프로젝트 구조
 
 ```
