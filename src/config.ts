@@ -10,6 +10,7 @@ export const config = {
   companyName: process.env.COMPANY_NAME || "Nabia",
   workStartTime: process.env.WORK_START_TIME || "09:00",
   workEndTime: process.env.WORK_END_TIME || "18:00",
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY || "",
 };
 
 if (!config.botToken) {

@@ -9,15 +9,16 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "grammy": "^1.21.1",
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@faker-js/faker": "^9.0.0",
     "better-sqlite3": "^11.3.0",
     "dotenv": "^16.4.5",
-    "@faker-js/faker": "^9.0.0"
+    "grammy": "^1.21.1"
   },
   "devDependencies": {
-    "tsx": "^4.19.0",
-    "typescript": "^5.5.0",
     "@types/better-sqlite3": "^7.6.11",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
   }
 }
