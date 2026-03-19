@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config.js";
 
-// Haiku: 빠르고 저렴하며 단순 인텐트 분류에 충분
+// Haiku: 빠르고 저렴하며 인텐트 분류 + 자연어 응답 생성에 충분
 const MODEL = "claude-haiku-4-5";
 
 let _client: Anthropic | null = null;
@@ -134,6 +134,50 @@ const tools: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: {}, required: [] },
   },
 ];
+
+/**
+ * DB 조회 결과를 Claude에게 전달해 자연어 응답을 생성.
+ *
+ * 기존에는 각 핸들러가 정형 포맷(이모지 + HTML)으로 직접 메시지를 조립했으나,
+ * 이 함수를 통해 Claude가 데이터를 보고 사람처럼 자연스럽게 답변을 생성함.
+ */
+export async function generateNaturalResponse(
+  userText: string,
+  actionType: string,
+  data: unknown
+): Promise<string> {
+  const client = getClient();
+
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: 1024,
+    system: `당신은 ${config.companyName}의 HR 어시스턴트 봇입니다.
+사용자의 질문에 자연스럽게 답변하세요.
+
+가장 중요한 규칙:
+- 사용자가 물어본 것만 정확히 답변하세요. 질문하지 않은 정보는 포함하지 마세요.
+- 예: "연봉 얼마야?" → 연봉만 답변. 부서, 직급, 연락처 등은 언급하지 않음.
+- 예: "오늘 지각자?" → 지각자 이름과 출근 시간만. 부서나 직급은 불필요.
+
+형식 규칙:
+- 텔레그램 HTML 형식 사용 (<b>, <i> 태그만 사용)
+- 1~2문장으로 간결하게. 목록이 필요하면 최소한으로.
+- 금액은 만원 단위 (예: 5,200만원)
+- 시간은 HH:MM 형식
+- 이모지는 최소한으로`,
+    messages: [
+      {
+        role: "user",
+        content: `사용자 질문: ${userText}\n\n조회 결과 (${actionType}):\n${JSON.stringify(data, null, 2)}`,
+      },
+    ],
+  });
+
+  const textBlock = response.content.find(
+    (b): b is Anthropic.TextBlock => b.type === "text"
+  );
+  return textBlock?.text || "응답을 생성할 수 없습니다.";
+}
 
 /**
  * 사용자 메시지를 Claude API에 보내 어떤 HR 함수를 호출할지 판단받음.
