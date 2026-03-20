@@ -1,8 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config.js";
+import { searchByName, salaryStatsByRole, listEmployees, overallStats } from "../repositories/employee-repo.js";
+import { getAttendanceByDate, getLateByDate, getAbsentByDate, getEmployeeMonthlyReport, getTodayStats } from "../repositories/attendance-repo.js";
+import { todayStr } from "../utils/formatters.js";
 
-// Haiku: 빠르고 저렴하며 인텐트 분류 + 자연어 응답 생성에 충분
 const MODEL = "claude-haiku-4-5";
+const MAX_TOKENS = 1024;
+const MAX_HISTORY = 20; // 사용자당 최근 N개 메시지만 유지
 
 let _client: Anthropic | null = null;
 
@@ -13,91 +17,63 @@ function getClient(): Anthropic {
   return _client;
 }
 
-export type HRAction =
-  | { type: "get_employee_salary"; name: string }
-  | { type: "get_salary_stats" }
-  | { type: "get_late_list" }
-  | { type: "get_absent_list" }
-  | { type: "get_attendance"; date?: string }
-  | { type: "get_employee_report"; name: string }
-  | { type: "search_employee"; name: string }
-  | { type: "list_employees" }
-  | { type: "get_hr_stats" }
-  | { type: "unknown" };
+// ─────────────────────────────────────────────
+// 도구 정의 — Claude가 직접 호출하고 결과를 받아 답변 생성
+// ─────────────────────────────────────────────
 
-/**
- * [툴 정의 배열]
- *
- * Claude API의 "tool use" 기능을 활용한 인텐트 분류기.
- *
- * 동작 원리:
- *   1. 사용자 메시지와 함께 이 tools 배열을 Claude에게 전달
- *   2. Claude가 각 툴의 name/description/input_schema를 보고
- *      "어떤 툴을 호출해야 하는가" + "파라미터는 무엇인가"를 판단
- *   3. Claude는 실제로 함수를 실행하지 않고, 호출 명세(tool_use 블록)만 반환
- *   4. 우리 코드가 그 명세를 받아 실제 DB 조회를 실행
- *
- * 각 툴 구조:
- *   name         - 툴 식별자. Claude가 반환하는 tool_use.name과 일치해야 함
- *   description  - ★ 가장 중요. Claude가 "언제 이 툴을 써야 하는가"를 판단하는 근거.
- *                  설명이 명확할수록 정확도가 높아짐
- *   input_schema - 이 툴을 호출할 때 필요한 파라미터 정의 (JSON Schema 형식)
- *                  Claude가 사용자 메시지에서 값을 추출해 채워줌
- */
 const tools: Anthropic.Tool[] = [
   {
-    // 예: "김민서 연봉", "이예나 월급이 얼마야?", "박지우 급여 알려줘"
-    name: "get_employee_salary",
-    description: "특정 직원의 연봉/급여/월급을 조회합니다.",
+    name: "search_employee",
+    description: "직원을 이름으로 검색합니다. 직원 정보(이름, 직급, 부서, 연봉, 입사일, 연락처)를 반환합니다.",
     input_schema: {
       type: "object",
       properties: {
-        // Claude가 사용자 메시지에서 직원 이름을 추출해 이 필드에 채워줌
-        name: { type: "string", description: "직원 이름 (부분 일치)" },
+        name: { type: "string", description: "검색할 직원 이름 (부분 일치)" },
       },
-      required: ["name"], // name이 없으면 이 툴을 호출하지 않음
+      required: ["name"],
     },
   },
   {
-    // 예: "연봉 통계", "직급별 급여 현황", "평균 연봉이 얼마야?"
-    // 특정 직원이 아닌 전체 통계를 물어볼 때 사용
     name: "get_salary_stats",
-    description: "전체 직급별 연봉 통계/현황을 조회합니다.",
-    // 파라미터 없음 — 조건 없이 전체 통계를 반환
+    description: "전체 직급별 연봉 통계(평균/최소/최대/인원수)를 조회합니다.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
   {
-    // 예: "오늘 지각자", "늦은 사람 누구야?", "지각한 직원 알려줘"
     name: "get_late_list",
-    description: "오늘 지각한 직원 목록을 조회합니다.",
-    input_schema: { type: "object", properties: {}, required: [] },
-  },
-  {
-    // 예: "오늘 결근자", "안 나온 사람", "결근한 직원 누구야?"
-    name: "get_absent_list",
-    description: "오늘 결근한 직원 목록을 조회합니다.",
-    input_schema: { type: "object", properties: {}, required: [] },
-  },
-  {
-    // 예: "출퇴근 현황", "오늘 근태", "2026-03-15 출퇴근 알려줘"
-    // date가 없으면 오늘 기준으로 조회
-    name: "get_attendance",
-    description: "출퇴근 현황을 조회합니다. 날짜 미지정 시 오늘 기준.",
+    description: "특정 날짜에 지각한 직원 목록을 조회합니다.",
     input_schema: {
       type: "object",
       properties: {
-        // 선택 파라미터 — 특정 날짜를 언급하면 Claude가 추출해서 채워줌
-        // "오늘 현황"처럼 날짜가 없는 경우엔 이 필드가 undefined로 옴
-        date: { type: "string", description: "YYYY-MM-DD 형식. 오늘이면 생략." },
+        date: { type: "string", description: "YYYY-MM-DD 형식. 생략 시 오늘." },
       },
-      required: [], // date가 없어도 호출 가능
+      required: [],
     },
   },
   {
-    // 예: "김민서 리포트", "이예나 근태 기록", "박지우 출퇴근 이력"
-    // 특정 직원의 한 달치 출퇴근 데이터를 보여줄 때 사용
+    name: "get_absent_list",
+    description: "특정 날짜에 결근한 직원 목록을 조회합니다.",
+    input_schema: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "YYYY-MM-DD 형식. 생략 시 오늘." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_attendance",
+    description: "특정 날짜의 전체 출퇴근 현황과 통계를 조회합니다.",
+    input_schema: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "YYYY-MM-DD 형식. 생략 시 오늘." },
+      },
+      required: [],
+    },
+  },
+  {
     name: "get_employee_report",
-    description: "특정 직원의 최근 30일 출퇴근 리포트를 조회합니다.",
+    description: "특정 직원의 최근 30일 출퇴근 리포트(출근일수, 지각, 조퇴, 평균출근시간)를 조회합니다.",
     input_schema: {
       type: "object",
       properties: {
@@ -107,131 +83,192 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
-    // 예: "김민서 누구야?", "이예나 정보", "박지우 부서 어디야?", "연락처 알려줘"
-    // 연봉/근태가 아닌 직원 프로필 정보를 물어볼 때 사용
-    name: "search_employee",
-    description: "직원 정보(직급, 부서, 연봉, 입사일, 연락처)를 조회합니다.",
+    name: "list_employees",
+    description: "전체 직원 목록을 페이지 단위로 조회합니다.",
     input_schema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "검색할 직원 이름" },
+        page: { type: "number", description: "페이지 번호 (1부터). 기본값 1." },
       },
-      required: ["name"],
+      required: [],
     },
   },
   {
-    // 예: "직원 목록", "전체 직원 보여줘", "직원 리스트"
-    // 특정 직원이 아닌 전체 목록을 요청할 때 사용
-    name: "list_employees",
-    description: "전체 직원 목록을 조회합니다.",
-    input_schema: { type: "object", properties: {}, required: [] },
-  },
-  {
-    // 예: "통계", "HR 현황", "전체 현황 요약해줘"
-    // 직원 수, 평균 연봉, 오늘 출퇴근 요약 등 종합 대시보드
     name: "get_hr_stats",
-    description: "전체 HR 통계 대시보드(직원 수, 평균 연봉, 출퇴근 요약)를 조회합니다.",
+    description: "전체 HR 통계 대시보드(직원 수, 평균 연봉, 직급 분포, 오늘 출퇴근 요약)를 조회합니다.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
 ];
 
-/**
- * DB 조회 결과를 Claude에게 전달해 자연어 응답을 생성.
- *
- * 기존에는 각 핸들러가 정형 포맷(이모지 + HTML)으로 직접 메시지를 조립했으나,
- * 이 함수를 통해 Claude가 데이터를 보고 사람처럼 자연스럽게 답변을 생성함.
- */
-export async function generateNaturalResponse(
-  userText: string,
-  actionType: string,
-  data: unknown
-): Promise<string> {
-  const client = getClient();
+// ─────────────────────────────────────────────
+// 도구 실행 — Claude의 tool_use 요청을 받아 실제 DB 조회
+// ─────────────────────────────────────────────
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 1024,
-    system: `당신은 ${config.companyName}의 HR 어시스턴트 봇입니다.
-사용자의 질문에 자연스럽게 답변하세요.
-
-가장 중요한 규칙:
-- 사용자가 물어본 것만 정확히 답변하세요. 질문하지 않은 정보는 포함하지 마세요.
-- 예: "연봉 얼마야?" → 연봉만 답변. 부서, 직급, 연락처 등은 언급하지 않음.
-- 예: "오늘 지각자?" → 지각자 이름과 출근 시간만. 부서나 직급은 불필요.
-
-형식 규칙:
-- 텔레그램 HTML 형식 사용 (<b>, <i> 태그만 사용)
-- 1~2문장으로 간결하게. 목록이 필요하면 최소한으로.
-- 금액은 만원 단위 (예: 5,200만원)
-- 시간은 HH:MM 형식
-- 이모지는 최소한으로`,
-    messages: [
-      {
-        role: "user",
-        content: `사용자 질문: ${userText}\n\n조회 결과 (${actionType}):\n${JSON.stringify(data, null, 2)}`,
-      },
-    ],
-  });
-
-  const textBlock = response.content.find(
-    (b): b is Anthropic.TextBlock => b.type === "text"
-  );
-  return textBlock?.text || "응답을 생성할 수 없습니다.";
+function executeTool(name: string, input: Record<string, any>): string {
+  switch (name) {
+    case "search_employee": {
+      const employees = searchByName(input.name);
+      if (employees.length === 0) return JSON.stringify({ result: "검색 결과 없음", query: input.name });
+      return JSON.stringify(employees.map(e => ({
+        id: e.id, name: e.name, role: e.role, department: e.department,
+        salary: e.salary, hire_date: e.hire_date, phone: e.phone, email: e.email,
+      })));
+    }
+    case "get_salary_stats":
+      return JSON.stringify(salaryStatsByRole());
+    case "get_late_list": {
+      const date = input.date || todayStr();
+      const list = getLateByDate(date);
+      return JSON.stringify({
+        date, count: list.length,
+        list: list.map(r => ({ name: (r as any).name, check_in_time: r.check_in_time })),
+      });
+    }
+    case "get_absent_list": {
+      const date = input.date || todayStr();
+      const list = getAbsentByDate(date);
+      return JSON.stringify({
+        date, count: list.length,
+        list: list.map(r => ({ name: r.name, role: r.role, department: r.department })),
+      });
+    }
+    case "get_attendance": {
+      const date = input.date || todayStr();
+      const records = getAttendanceByDate(date);
+      const stats = getTodayStats();
+      return JSON.stringify({
+        date,
+        stats: { present: stats.present, late: stats.late, absent: stats.absent, total: stats.total },
+        totalRecords: records.length,
+        records: records.slice(0, 30).map(r => ({
+          name: (r as any).name, check_in_time: r.check_in_time,
+          check_out_time: r.check_out_time, is_late: r.is_late,
+        })),
+      });
+    }
+    case "get_employee_report": {
+      const employees = searchByName(input.name);
+      if (employees.length === 0) return JSON.stringify({ result: "검색 결과 없음", query: input.name });
+      return JSON.stringify(employees.map(emp => {
+        const report = getEmployeeMonthlyReport(emp.id);
+        return { name: emp.name, role: emp.role, department: emp.department, ...report };
+      }));
+    }
+    case "list_employees": {
+      const page = input.page || 1;
+      const { employees, total } = listEmployees(page, 10);
+      return JSON.stringify({
+        page, totalPages: Math.ceil(total / 10), total,
+        employees: employees.map(e => ({ name: e.name, role: e.role, department: e.department })),
+      });
+    }
+    case "get_hr_stats": {
+      const stats = overallStats();
+      const todayS = getTodayStats();
+      return JSON.stringify({
+        totalEmployees: stats.totalEmployees, avgSalary: stats.avgSalary,
+        roleDistribution: stats.roleDistribution,
+        today: { present: todayS.present, late: todayS.late, absent: todayS.absent },
+      });
+    }
+    default:
+      return JSON.stringify({ error: "알 수 없는 도구" });
+  }
 }
 
-/**
- * 사용자 메시지를 Claude API에 보내 어떤 HR 함수를 호출할지 판단받음.
- *
- * tool_choice: "any" — Claude가 반드시 tools 중 하나를 선택하도록 강제.
- * ("auto"면 Claude가 툴을 안 쓰고 그냥 텍스트로 답할 수도 있음)
- */
-export async function parseHRIntent(userText: string): Promise<HRAction> {
+// ─────────────────────────────────────────────
+// 대화 히스토리 관리
+// ─────────────────────────────────────────────
+
+export type MessageParam = Anthropic.MessageParam;
+
+const conversations = new Map<number, MessageParam[]>();
+
+export function clearConversation(telegramId: number): void {
+  conversations.delete(telegramId);
+}
+
+// ─────────────────────────────────────────────
+// 채팅 — 에이전트 루프 (tool_use → tool_result 반복)
+// ─────────────────────────────────────────────
+
+export async function chat(telegramId: number, userText: string): Promise<string> {
   const client = getClient();
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 256,
-    // "any": 반드시 툴 중 하나를 골라야 함 (텍스트 응답 불가)
-    // → Claude가 tools 배열을 보고 description을 기반으로 가장 적합한 툴을 선택
-    tool_choice: { type: "any" },
-    tools,
-    system: "당신은 HR 봇의 자연어 처리 모듈입니다. 사용자 메시지를 분석해 적절한 HR 함수를 호출하세요.",
-    messages: [{ role: "user", content: userText }],
-  });
-
-  // Claude 응답에서 tool_use 블록 추출
-  // tool_use 블록 = { type: "tool_use", name: "get_employee_salary", input: { name: "김민서" } }
-  const toolUse = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
-  );
-
-  if (!toolUse) return { type: "unknown" };
-
-  // toolUse.input은 Claude가 input_schema를 보고 사용자 메시지에서 추출한 파라미터
-  const input = toolUse.input as Record<string, string>;
-
-  // toolUse.name을 보고 HRAction 타입으로 변환해서 반환
-  // natural.ts의 switch문이 이 값을 보고 실제 핸들러 함수를 호출함
-  switch (toolUse.name) {
-    case "get_employee_salary":
-      return { type: "get_employee_salary", name: input.name };
-    case "get_salary_stats":
-      return { type: "get_salary_stats" };
-    case "get_late_list":
-      return { type: "get_late_list" };
-    case "get_absent_list":
-      return { type: "get_absent_list" };
-    case "get_attendance":
-      return { type: "get_attendance", date: input.date };
-    case "get_employee_report":
-      return { type: "get_employee_report", name: input.name };
-    case "search_employee":
-      return { type: "search_employee", name: input.name };
-    case "list_employees":
-      return { type: "list_employees" };
-    case "get_hr_stats":
-      return { type: "get_hr_stats" };
-    default:
-      return { type: "unknown" };
+  if (!conversations.has(telegramId)) {
+    conversations.set(telegramId, []);
   }
+  const history = conversations.get(telegramId)!;
+
+  // 사용자 메시지 추가
+  history.push({ role: "user", content: userText });
+
+  // 히스토리 제한
+  while (history.length > MAX_HISTORY) {
+    history.shift();
+  }
+
+  // API 호출용 메시지 복사 (tool_use 루프에서 중간 메시지 추가)
+  const messages: MessageParam[] = [...history];
+
+  const systemPrompt = `당신은 ${config.companyName}의 HR 어시스턴트 봇입니다.
+경영진이 텔레그램으로 직원 정보, 급여, 출퇴근 현황 등을 물어봅니다.
+
+규칙:
+- 도구를 사용해 데이터를 조회한 뒤, 자연스러운 한국어로 답변하세요.
+- 질문한 내용만 간결하게 답변하세요. 불필요한 정보는 포함하지 마세요.
+- 텔레그램 HTML 형식 사용 (<b>, <i> 태그만)
+- 금액은 만원 단위 (예: 5,200만원), 시간은 HH:MM 형식
+- 동명이인이 여러 명이면 목록을 보여주고 누구인지 물어보세요.
+- HR과 관련 없는 질문에는 정중히 HR 관련 질문만 가능하다고 안내하세요.
+- 오늘 날짜: ${todayStr()}`;
+
+  // 에이전트 루프: Claude가 텍스트 응답을 줄 때까지 tool_use 반복
+  const MAX_ITERATIONS = 5;
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: MAX_TOKENS,
+      system: systemPrompt,
+      tools,
+      messages,
+    });
+
+    // tool_use가 있으면 실행하고 결과를 돌려줌
+    if (response.stop_reason === "tool_use") {
+      messages.push({ role: "assistant", content: response.content });
+
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+      for (const block of response.content) {
+        if (block.type === "tool_use") {
+          const result = executeTool(block.name, block.input as Record<string, any>);
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: result,
+          });
+        }
+      }
+
+      messages.push({ role: "user", content: toolResults });
+      continue;
+    }
+
+    // 텍스트 응답 추출
+    const textBlock = response.content.find(
+      (b): b is Anthropic.TextBlock => b.type === "text"
+    );
+    const reply = textBlock?.text || "응답을 생성할 수 없습니다.";
+
+    // 대화 히스토리에는 최종 텍스트만 저장 (중간 tool 호출은 제외)
+    history.push({ role: "assistant", content: reply });
+
+    while (history.length > MAX_HISTORY) {
+      history.shift();
+    }
+
+    return reply;
+  }
+
+  return "처리 시간이 초과되었습니다. 다시 시도해주세요.";
 }

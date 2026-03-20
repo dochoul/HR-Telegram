@@ -45,6 +45,7 @@ export function registerAuthHandlers(bot: Bot) {
       message += `/absent — 오늘 결근자\n`;
       message += `/report [이름] — 월간 출퇴근 리포트\n`;
       message += `/stats — 전체 HR 통계\n`;
+      message += `/clear — 대화 초기화\n`;
     }
 
     if (user && user.role === "superadmin") {
