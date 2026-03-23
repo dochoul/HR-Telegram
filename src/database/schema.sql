@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS employees (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT    NOT NULL,
-    role        TEXT    NOT NULL CHECK(role IN ('개발자','기획자','디자이너','이사 및 경영진')),
+    role        TEXT    NOT NULL CHECK(role IN ('개발자','기획자','디자이너','이사 및 경영진','부장')),
     department  TEXT    NOT NULL,
     salary      INTEGER NOT NULL,
     hire_date   TEXT    NOT NULL,
