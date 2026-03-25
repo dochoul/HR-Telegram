@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config.js";
-import { searchByName, salaryStatsByRole, listEmployees, overallStats } from "../repositories/employee-repo.js";
+import { searchByName, salaryStatsByRole, salaryStatsByDepartment, listEmployees, filterEmployees, overallStats } from "../repositories/employee-repo.js";
 import { getAttendanceByDate, getLateByDate, getAbsentByDate, getEmployeeMonthlyReport, getTodayStats } from "../repositories/attendance-repo.js";
 import { todayStr } from "../utils/formatters.js";
 
@@ -36,6 +36,11 @@ const tools: Anthropic.Tool[] = [
   {
     name: "get_salary_stats",
     description: "전체 직급별 연봉 통계(평균/최소/최대/인원수)를 조회합니다.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "get_salary_stats_by_department",
+    description: "부서별 연봉 통계(평균/최소/최대/인원수)를 조회합니다.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
   {
@@ -84,11 +89,27 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: "list_employees",
-    description: "전체 직원 목록을 페이지 단위로 조회합니다.",
+    description: "전체 직원 목록을 조회합니다. page_size를 크게 하면 한 번에 많이 볼 수 있습니다.",
     input_schema: {
       type: "object",
       properties: {
         page: { type: "number", description: "페이지 번호 (1부터). 기본값 1." },
+        page_size: { type: "number", description: "한 페이지당 인원수. 기본값 10, 최대 200." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "filter_employees",
+    description: "직원을 직급/부서로 필터링하고 연봉/입사일/이름 기준으로 정렬하여 조회합니다. 예: 개발자 중 연봉 TOP 5, 모바일팀에서 가장 먼저 입사한 사람, 연봉이 가장 낮은 직원 등.",
+    input_schema: {
+      type: "object",
+      properties: {
+        role: { type: "string", description: "직급 필터: 개발자, 기획자, 디자이너, 이사 및 경영진, 부장" },
+        department: { type: "string", description: "부서 필터: CTO실, PM팀, UI팀, UX팀, 경영지원실, 데이터팀, 모바일팀, 백엔드팀, 브랜드팀, 서비스기획팀, 인프라팀, 전략기획팀, 전략실, 프론트엔드팀" },
+        sort_by: { type: "string", description: "정렬 기준: salary, hire_date, name. 기본값 salary" },
+        order: { type: "string", description: "정렬 방향: DESC(내림차순), ASC(오름차순). 기본값 DESC" },
+        limit: { type: "number", description: "결과 수 제한. 기본값 10, 최대 200" },
       },
       required: [],
     },
@@ -116,6 +137,8 @@ function executeTool(name: string, input: Record<string, any>): string {
     }
     case "get_salary_stats":
       return JSON.stringify(salaryStatsByRole());
+    case "get_salary_stats_by_department":
+      return JSON.stringify(salaryStatsByDepartment());
     case "get_late_list": {
       const date = input.date || todayStr();
       const list = getLateByDate(date);
@@ -156,10 +179,28 @@ function executeTool(name: string, input: Record<string, any>): string {
     }
     case "list_employees": {
       const page = input.page || 1;
-      const { employees, total } = listEmployees(page, 10);
+      const pageSize = Math.min(input.page_size || 10, 200);
+      const { employees, total } = listEmployees(page, pageSize);
       return JSON.stringify({
-        page, totalPages: Math.ceil(total / 10), total,
+        page, pageSize, totalPages: Math.ceil(total / pageSize), total,
         employees: employees.map(e => ({ name: e.name, role: e.role, department: e.department })),
+      });
+    }
+    case "filter_employees": {
+      const employees = filterEmployees({
+        role: input.role,
+        department: input.department,
+        sort_by: input.sort_by,
+        order: input.order,
+        limit: input.limit,
+      });
+      return JSON.stringify({
+        count: employees.length,
+        filters: { role: input.role, department: input.department, sort_by: input.sort_by || "salary", order: input.order || "DESC" },
+        employees: employees.map(e => ({
+          name: e.name, role: e.role, department: e.department,
+          salary: e.salary, hire_date: e.hire_date,
+        })),
       });
     }
     case "get_hr_stats": {

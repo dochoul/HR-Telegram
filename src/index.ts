@@ -1,3 +1,6 @@
+// 회사 SSL inspection 우회 (자체 서명 인증서 허용)
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 import { Bot } from "grammy";
 import { config } from "./config.js";
 import { initDb, closeDb } from "./database/connection.js";

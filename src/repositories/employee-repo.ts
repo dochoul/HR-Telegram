@@ -37,6 +37,21 @@ export function salaryStatsByRole(): { role: string; avg_salary: number; min_sal
   `).all() as any[];
 }
 
+export function salaryStatsByDepartment(): { department: string; avg_salary: number; min_salary: number; max_salary: number; count: number }[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT department,
+           ROUND(AVG(salary)) as avg_salary,
+           MIN(salary) as min_salary,
+           MAX(salary) as max_salary,
+           COUNT(*) as count
+    FROM employees
+    WHERE is_active = 1
+    GROUP BY department
+    ORDER BY avg_salary DESC
+  `).all() as any[];
+}
+
 export function getEmployeeSalary(name: string): Employee[] {
   return searchByName(name);
 }
@@ -75,6 +90,36 @@ export function findEmployeeInText(text: string): Employee[] {
   return db.prepare(
     `SELECT * FROM employees WHERE name IN (${placeholders}) AND is_active = 1`
   ).all(...matched) as Employee[];
+}
+
+export function filterEmployees(options: {
+  role?: string;
+  department?: string;
+  sort_by?: string;
+  order?: string;
+  limit?: number;
+}): Employee[] {
+  const db = getDb();
+  const conditions = ["is_active = 1"];
+  const params: any[] = [];
+
+  if (options.role) {
+    conditions.push("role = ?");
+    params.push(options.role);
+  }
+  if (options.department) {
+    conditions.push("department = ?");
+    params.push(options.department);
+  }
+
+  const sortCol = ["salary", "hire_date", "name"].includes(options.sort_by || "") ? options.sort_by : "salary";
+  const sortOrder = options.order === "ASC" ? "ASC" : "DESC";
+  const limit = Math.min(options.limit || 10, 200);
+
+  const sql = `SELECT * FROM employees WHERE ${conditions.join(" AND ")} ORDER BY ${sortCol} ${sortOrder} LIMIT ?`;
+  params.push(limit);
+
+  return db.prepare(sql).all(...params) as Employee[];
 }
 
 export function overallStats(): {
