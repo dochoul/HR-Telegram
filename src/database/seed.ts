@@ -56,8 +56,8 @@ function roundToTenThousand(n: number): number {
 
 function seedEmployees(db: ReturnType<typeof getDb>) {
   const insert = db.prepare(`
-    INSERT INTO employees (name, role, department, salary, hire_date, phone, email, is_active)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+    INSERT INTO employees (name, role, department, salary, hire_date, birth_date, phone, email, is_active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
   `);
 
   const insertMany = db.transaction(() => {
@@ -73,14 +73,37 @@ function seedEmployees(db: ReturnType<typeof getDb>) {
         }).toISOString().split("T")[0];
         const phone = faker.phone.number({ style: "national" });
         const email = `${faker.internet.username().toLowerCase()}@nabia.co.kr`;
+        const birthDate = faker.date.between({
+          from: "1970-01-01",
+          to: "2000-12-31",
+        }).toISOString().split("T")[0];
 
-        insert.run(name, role, dept, salary, hireDate, phone, email);
+        insert.run(name, role, dept, salary, hireDate, birthDate, phone, email);
       }
     }
   });
 
   insertMany();
   console.log("✅ 직원 100명 시드 데이터 생성 완료");
+}
+
+/**
+ * 출퇴근 규칙:
+ * - 출근: 09:00 ~ 10:00 (10:00 이후 지각)
+ * - 점심: 12:00 ~ 13:00 (근무시간 제외)
+ * - 근무: 8시간 → 퇴근 = 출근 + 9시간
+ *   예) 09:00→18:00, 09:30→18:30, 10:00→19:00
+ * - 야근: 정규 퇴근시간 이후 근무
+ */
+function calcExpectedCheckout(checkInMinutes: number): number {
+  // checkInMinutes: 0시 기준 분 (예: 09:00 = 540)
+  return checkInMinutes + 9 * 60; // 8h 근무 + 1h 점심
+}
+
+function minutesToTime(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
 }
 
 function seedAttendance(db: ReturnType<typeof getDb>) {
@@ -109,32 +132,41 @@ function seedAttendance(db: ReturnType<typeof getDb>) {
       for (const workDate of workdays) {
         const rand = Math.random();
 
-        // 5% absent
+        // 5% 결근
         if (rand < 0.05) continue;
 
-        let checkIn: string;
+        let checkInMinutes: number;
         let isLate = 0;
 
-        if (rand < 0.15) {
-          // 10% late (09:01 ~ 10:30)
-          const minutes = randomInt(1, 90);
-          const hour = 9 + Math.floor(minutes / 60);
-          const min = minutes % 60;
-          checkIn = `${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}:00`;
+        if (rand < 0.12) {
+          // 7% 지각 (10:01 ~ 10:40)
+          checkInMinutes = 10 * 60 + randomInt(1, 40);
           isLate = 1;
         } else {
-          // 85% normal (08:30 ~ 09:00)
-          const min = randomInt(30, 59);
-          checkIn = `08:${String(min).padStart(2, "0")}:00`;
+          // 88% 정상 출근 (09:00 ~ 10:00)
+          checkInMinutes = 9 * 60 + randomInt(0, 60);
         }
 
-        // Checkout: 18:00 ~ 19:30
-        const coMin = randomInt(0, 90);
-        const coHour = 18 + Math.floor(coMin / 60);
-        const coMinute = coMin % 60;
-        const checkOut = `${String(coHour).padStart(2, "0")}:${String(coMinute).padStart(2, "0")}:00`;
+        const expectedCheckout = calcExpectedCheckout(checkInMinutes);
 
-        const isEarlyLeave = coHour < 18 ? 1 : 0;
+        // 퇴근 패턴
+        let checkOutMinutes: number;
+        const pattern = Math.random();
+        if (pattern < 0.03) {
+          // 3% 조퇴 (정규 퇴근 30~60분 전)
+          checkOutMinutes = expectedCheckout - randomInt(30, 60);
+        } else if (pattern < 0.25) {
+          // 22% 야근 (정규 퇴근 후 10~120분 추가)
+          checkOutMinutes = expectedCheckout + randomInt(10, 120);
+        } else {
+          // 75% 정시 퇴근 (정규 퇴근 ±5분)
+          checkOutMinutes = expectedCheckout + randomInt(-5, 5);
+        }
+
+        const isEarlyLeave = checkOutMinutes < expectedCheckout - 5 ? 1 : 0;
+
+        const checkIn = minutesToTime(checkInMinutes);
+        const checkOut = minutesToTime(checkOutMinutes);
 
         insert.run(emp.id, workDate, checkIn, checkOut, isLate, isEarlyLeave);
       }
@@ -143,6 +175,45 @@ function seedAttendance(db: ReturnType<typeof getDb>) {
 
   insertMany();
   console.log(`✅ 출퇴근 데이터 생성 완료 (${workdays.length}일 × ${employees.length}명)`);
+}
+
+function seedEvaluations(db: ReturnType<typeof getDb>) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO evaluations (employee_id, year, grade)
+    VALUES (?, ?, ?)
+  `);
+
+  const employees = db.prepare("SELECT id, hire_date FROM employees").all() as { id: number; hire_date: string }[];
+  const GRADES = ["A", "B", "C", "D", "E"];
+  // 가중치: B, C가 많고 A, D는 적고, E는 드묾
+  const WEIGHTS = [10, 30, 40, 15, 5];
+
+  function weightedGrade(): string {
+    const total = WEIGHTS.reduce((a, b) => a + b, 0);
+    let r = Math.random() * total;
+    for (let i = 0; i < GRADES.length; i++) {
+      r -= WEIGHTS[i];
+      if (r <= 0) return GRADES[i];
+    }
+    return "C";
+  }
+
+  const currentYear = new Date().getFullYear();
+  const EVAL_YEARS = [currentYear - 2, currentYear - 1, currentYear];
+
+  const insertMany = db.transaction(() => {
+    for (const emp of employees) {
+      const hireYear = parseInt(emp.hire_date.split("-")[0], 10);
+      for (const year of EVAL_YEARS) {
+        // 입사 연도보다 이전 연도에는 평가 없음
+        if (year < hireYear) continue;
+        insert.run(emp.id, year, weightedGrade());
+      }
+    }
+  });
+
+  insertMany();
+  console.log(`✅ 평가 데이터 생성 완료 (${EVAL_YEARS.join(", ")}년)`);
 }
 
 export function seedDatabase() {
@@ -156,6 +227,7 @@ export function seedDatabase() {
 
   seedEmployees(db);
   seedAttendance(db);
+  seedEvaluations(db);
 }
 
 // Direct execution

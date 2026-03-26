@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS employees (
     department  TEXT    NOT NULL,
     salary      INTEGER NOT NULL,
     hire_date   TEXT    NOT NULL,
+    birth_date  TEXT,
     phone       TEXT,
     email       TEXT,
     is_active   INTEGER NOT NULL DEFAULT 1
@@ -30,6 +31,14 @@ CREATE TABLE IF NOT EXISTS telegram_users (
                       CHECK(role IN ('pending','executive','superadmin')),
     registered_at     TEXT NOT NULL,
     employee_id       INTEGER REFERENCES employees(id)
+);
+
+CREATE TABLE IF NOT EXISTS evaluations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL REFERENCES employees(id),
+    year        INTEGER NOT NULL,
+    grade       TEXT    NOT NULL CHECK(grade IN ('A','B','C','D','E')),
+    UNIQUE(employee_id, year)
 );
 
 CREATE TABLE IF NOT EXISTS registration_codes (

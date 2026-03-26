@@ -5,6 +5,7 @@ export interface Employee {
   department: string;
   salary: number;
   hire_date: string;
+  birth_date: string | null;
   phone: string | null;
   email: string | null;
   is_active: number;

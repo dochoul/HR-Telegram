@@ -2,6 +2,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config.js";
 import { searchByName, salaryStatsByRole, salaryStatsByDepartment, listEmployees, filterEmployees, overallStats } from "../repositories/employee-repo.js";
 import { getAttendanceByDate, getLateByDate, getAbsentByDate, getEmployeeMonthlyReport, getTodayStats } from "../repositories/attendance-repo.js";
+import { getEvaluationsByEmployee, getEvaluationsByYear, getEvaluationStatsByYear, getEvaluationsByGrade } from "../repositories/evaluation-repo.js";
+import { getDb } from "../database/connection.js";
 import { todayStr } from "../utils/formatters.js";
 
 const MODEL = "claude-haiku-4-5";
@@ -24,7 +26,7 @@ function getClient(): Anthropic {
 const tools: Anthropic.Tool[] = [
   {
     name: "search_employee",
-    description: "직원을 이름으로 검색합니다. 직원 정보(이름, 직급, 부서, 연봉, 입사일, 연락처)를 반환합니다.",
+    description: "직원을 이름으로 검색합니다. 직원 정보(이름, 직급, 부서, 연봉, 입사일, 생일, 연락처)를 반환합니다.",
     input_schema: {
       type: "object",
       properties: {
@@ -119,6 +121,40 @@ const tools: Anthropic.Tool[] = [
     description: "전체 HR 통계 대시보드(직원 수, 평균 연봉, 직급 분포, 오늘 출퇴근 요약)를 조회합니다.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
+  {
+    name: "get_birthdays_by_month",
+    description: "특정 월에 생일인 직원 목록을 조회합니다. 이번 달, 다음 달 생일자 등을 확인할 수 있습니다.",
+    input_schema: {
+      type: "object",
+      properties: {
+        month: { type: "number", description: "조회할 월 (1~12). 생략 시 이번 달." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_employee_evaluations",
+    description: "특정 직원의 연도별 평가 등급(A~E) 이력을 조회합니다.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "직원 이름" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "get_evaluations_by_year",
+    description: "특정 연도의 전체 평가 결과를 조회합니다. 등급별 인원수 통계와 직원 목록을 반환합니다.",
+    input_schema: {
+      type: "object",
+      properties: {
+        year: { type: "number", description: "조회할 연도 (예: 2025)" },
+        grade: { type: "string", description: "특정 등급만 필터링 (A, B, C, D, E). 생략 시 전체." },
+      },
+      required: ["year"],
+    },
+  },
 ];
 
 // ─────────────────────────────────────────────
@@ -132,7 +168,7 @@ function executeTool(name: string, input: Record<string, any>): string {
       if (employees.length === 0) return JSON.stringify({ result: "검색 결과 없음", query: input.name });
       return JSON.stringify(employees.map(e => ({
         id: e.id, name: e.name, role: e.role, department: e.department,
-        salary: e.salary, hire_date: e.hire_date, phone: e.phone, email: e.email,
+        salary: e.salary, hire_date: e.hire_date, birth_date: e.birth_date, phone: e.phone, email: e.email,
       })));
     }
     case "get_salary_stats":
@@ -212,6 +248,53 @@ function executeTool(name: string, input: Record<string, any>): string {
         today: { present: todayS.present, late: todayS.late, absent: todayS.absent },
       });
     }
+    case "get_birthdays_by_month": {
+      const month = input.month || new Date().getMonth() + 1;
+      const mm = String(month).padStart(2, "0");
+      const db = getDb();
+      const rows = db.prepare(`
+        SELECT name, role, department, birth_date
+        FROM employees
+        WHERE is_active = 1 AND substr(birth_date, 6, 2) = ?
+        ORDER BY substr(birth_date, 9, 2) ASC
+      `).all(mm) as any[];
+      return JSON.stringify({
+        month,
+        count: rows.length,
+        employees: rows.map((e: any) => ({
+          name: e.name, role: e.role, department: e.department,
+          birth_date: e.birth_date,
+        })),
+      });
+    }
+    case "get_employee_evaluations": {
+      const employees = searchByName(input.name);
+      if (employees.length === 0) return JSON.stringify({ result: "검색 결과 없음", query: input.name });
+      return JSON.stringify(employees.map(emp => {
+        const evals = getEvaluationsByEmployee(emp.id);
+        return {
+          name: emp.name, role: emp.role, department: emp.department,
+          evaluations: evals.map(ev => ({ year: ev.year, grade: ev.grade })),
+        };
+      }));
+    }
+    case "get_evaluations_by_year": {
+      const year = input.year;
+      const stats = getEvaluationStatsByYear(year);
+      if (input.grade) {
+        const list = getEvaluationsByGrade(year, input.grade.toUpperCase());
+        return JSON.stringify({
+          year, grade: input.grade.toUpperCase(), count: list.length,
+          stats,
+          employees: list.map((e: any) => ({ name: e.name, role: e.role, department: e.department })),
+        });
+      }
+      const all = getEvaluationsByYear(year);
+      return JSON.stringify({
+        year, totalCount: all.length, stats,
+        employees: all.slice(0, 50).map((e: any) => ({ name: e.name, role: e.role, department: e.department, grade: e.grade })),
+      });
+    }
     default:
       return JSON.stringify({ error: "알 수 없는 도구" });
   }
@@ -262,7 +345,8 @@ export async function chat(telegramId: number, userText: string): Promise<string
 - 금액은 만원 단위 (예: 5,200만원), 시간은 HH:MM 형식
 - 동명이인이 여러 명이면 목록을 보여주고 누구인지 물어보세요.
 - HR과 관련 없는 질문에는 정중히 HR 관련 질문만 가능하다고 안내하세요.
-- 오늘 날짜: ${todayStr()}`;
+- 사용자 입력에 오타가 있을 수 있습니다. "아번달"="이번달", "담달"="다음달" 등 문맥으로 판단하세요.
+- 오늘 날짜: ${todayStr()} (이번 달 = ${new Date().getMonth() + 1}월)`;
 
   // 에이전트 루프: Claude가 텍스트 응답을 줄 때까지 tool_use 반복
   const MAX_ITERATIONS = 5;

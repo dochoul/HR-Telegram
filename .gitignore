@@ -5,3 +5,4 @@ data/*.db
 *.js.map
 __pycache__/
 .DS_Store
+.omc/
